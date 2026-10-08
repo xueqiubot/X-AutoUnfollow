@@ -1,21 +1,33 @@
 ﻿# 打包 Chrome 扩展 release zip
 #
 # 用法：
-#   pwsh -File tools/build-release.ps1            # 版本号取 manifest.json 的 version
-#   pwsh -File tools/build-release.ps1 -Version 1.1.0
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-release.ps1
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-release.ps1 -Version 1.1.0
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-release.ps1 -Flat
 #
 # 产物：dist/X-AutoUnfollow-v<version>.zip
-#   zip 根目录即 manifest.json，解压后可直接「加载已解压的扩展程序」。
-#   仅包含运行期文件（tools/ 等开发期资源不打包）。
+#
+# 默认布局（推荐）：zip 内套一层同名文件夹
+#   X-AutoUnfollow-v1.0.0/manifest.json
+#   X-AutoUnfollow-v1.0.0/sidepanel/...
+#   → 「解压到当前文件夹」不会把文件散落一地；解压后直接选中该文件夹
+#     用「加载已解压的扩展程序」载入即可。
+#
+# -Flat：不套文件夹，manifest.json 直接位于 zip 根目录（旧行为）。
+#
+# 仅包含运行期文件（tools/ 等开发期资源不打包）。
 #
 # 实现要点：
-#   - 用 .NET ZipArchive 手写条目，条目名统一为正斜杠（Compress-Archive 在部分
-#     PowerShell 版本会写入反斜杠，不符合 ZIP 规范，Linux/macOS 解压会出错）。
+#   - 用 .NET ZipArchive 手写条目，条目名统一为正斜杠（Compress-Archive 在
+#     Windows PowerShell 5.1 会写入反斜杠，不符合 ZIP 规范，Linux/macOS 解压会出错）。
 #   - 条目时间戳固定 1980-01-01，使相同输入产出字节一致的 zip。
+#   - 本文件必须保存为「UTF-8 带 BOM」：Windows PowerShell 5.1 对无 BOM 的
+#     UTF-8 脚本按 ANSI 解码，会把下面这些中文注释读乱并直接语法报错。
 
 [CmdletBinding()]
 param(
-  [string]$Version
+  [string]$Version,
+  [switch]$Flat
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,6 +45,10 @@ $name  = "X-AutoUnfollow-v$Version"
 $dist  = Join-Path $root 'dist'
 $stage = Join-Path $dist $name
 $zip   = Join-Path $dist "$name.zip"
+
+# zip 内条目前缀：默认套一层同名文件夹，-Flat 时不套
+$prefix = if ($Flat) { '' } else { "$name/" }
+$layout = if ($Flat) { '平铺' } else { "套文件夹 $name/" }
 
 # 参与打包的运行期文件 / 目录
 $include = @('manifest.json', 'background.js', 'README.md', 'profile-avatar.jpg', 'content', 'sidepanel', 'icons')
@@ -55,7 +71,7 @@ $fs   = [System.IO.File]::Open($zip, [System.IO.FileMode]::CreateNew)
 $arch = New-Object System.IO.Compression.ZipArchive($fs, [System.IO.Compression.ZipArchiveMode]::Create)
 try {
   foreach ($f in $files) {
-    $rel = $f.FullName.Substring($rootLen).Replace('\', '/')
+    $rel = $prefix + $f.FullName.Substring($rootLen).Replace('\', '/')
     $entry = $arch.CreateEntry($rel, [System.IO.Compression.CompressionLevel]::Optimal)
     $entry.LastWriteTime = [datetimeoffset]::new(1980, 1, 1, 0, 0, 0, [timespan]::Zero)
     $es = $entry.Open()
@@ -66,13 +82,20 @@ try {
   }
 } finally { $arch.Dispose(); $fs.Dispose() }
 
-# 校验：manifest.json 必须在 zip 根目录
+# 校验：manifest.json 必须在期望位置，且条目名全部为正斜杠、无多余层级
+$manifestEntry = "${prefix}manifest.json"
 $check = [System.IO.Compression.ZipFile]::OpenRead($zip)
 try {
-  $names = $check.Entries | ForEach-Object { $_.FullName }
-  if ($names -notcontains 'manifest.json') { throw '打包结果缺少根目录 manifest.json' }
+  $names = @($check.Entries | ForEach-Object { $_.FullName })
+  if ($names -notcontains $manifestEntry) { throw "打包结果缺少 $manifestEntry" }
   if ($names | Where-Object { $_ -match '\\' }) { throw '打包结果存在反斜杠条目名' }
+  if ($names | Where-Object { $_ -notlike "$prefix*" }) { throw "打包结果存在 $prefix 之外的条目" }
+  # 去掉前缀后：顶层文件不应带斜杠，目录内文件只允许一层（content|sidepanel|icons）
+  $stripped = $names | ForEach-Object { $_ -replace "^$([regex]::Escape($prefix))", '' }
+  $deep = $stripped | Where-Object { $_ -match '/' -and $_ -notmatch '^(content|sidepanel|icons)/[^/]+$' }
+  if ($deep) { throw "打包结果层级异常：$($deep -join ', ')" }
 } finally { $check.Dispose() }
 
 $size = (Get-Item $zip).Length
-Write-Host "已生成：dist/$name.zip  ($([math]::Round($size/1KB,1)) KB, $($files.Count) 个文件)"
+Write-Host "已生成：dist/$name.zip  ($([math]::Round($size/1KB,1)) KB, $($files.Count) 个文件, 布局=$layout)"
+Write-Host "引导入口：解压后选中含 manifest.json 的目录 —— $manifestEntry"

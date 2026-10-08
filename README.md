@@ -112,20 +112,37 @@ NODE_PATH=<node_workspace>/node_modules node tools/test-follow-profile.cjs
 ## 七、打包发布
 
 ```powershell
-# 版本号自动取 manifest.json 的 version，产物为 dist/X-AutoUnfollow-v<version>.zip
+# 默认：zip 内套一层同名文件夹（推荐）
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-release.ps1
 
-# 也可显式指定版本号
+# 显式指定版本号
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-release.ps1 -Version 1.1.0
+
+# 平铺：manifest.json 直接位于 zip 根目录
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-release.ps1 -Flat
 ```
 
-打出的 zip **根目录即 `manifest.json`**，解压后可直接用「加载已解压的扩展程序」载入；
+产物 `dist/X-AutoUnfollow-v<version>.zip`，**默认套一层同名文件夹**：
+
+```
+X-AutoUnfollow-v1.0.0/
+├── manifest.json
+├── background.js
+├── README.md
+├── profile-avatar.jpg
+├── content/ · sidepanel/ · icons/
+```
+
+这样「解压到当前文件夹」不会把十几个文件散落一地，解压后直接选中
+`X-AutoUnfollow-v1.0.0/` 那一层用「加载已解压的扩展程序」载入即可。
+`-Flat` 保留旧的平铺布局（manifest 在 zip 根目录），适合要求根目录即扩展根的分发工具链。
+
 仅含运行期文件（`tools/`、`.workbuddy/` 等开发期资源不入包）。
 脚本用 .NET `ZipArchive` 手写条目（条目名统一正斜杠，时间戳固定 1980-01-01），
 相同输入产出字节一致的 zip。
 
 > Windows PowerShell 5.1 默认按 ANSI 读取无 BOM 的 UTF-8 文本，
-> 因此 `tools/build-release.ps1` 自带 BOM，读取 `manifest.json` 时也显式指定了 `-Encoding UTF8`。
+> 因此 `tools/build-release.ps1` **必须保存为 UTF-8 带 BOM**，读取 `manifest.json` 时也显式指定了 `-Encoding UTF8`。
 
 ## 八、已知限制
 
