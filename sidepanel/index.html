@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>X 自动取关助手</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">X</span>
+      <div class="brand-text">
+        <h1>自动取关助手</h1>
+        <p id="envBadge" class="env-badge env-unknown">
+          <span class="dot"></span><span id="envText">环境检测中…</span>
+        </p>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ 作者卡片 ============ -->
+  <!-- 展示作者/推广主页，提供「关注」快捷入口；关注成功后永久隐藏。
+       默认由 sidepanel.js 的 renderAuthorCard() 填充，hidden 属性控制显隐。 -->
+  <section id="authorCard" class="author-card" hidden>
+    <div class="ac-row">
+      <img id="acAvatar" class="ac-avatar" src="../profile-avatar.jpg" alt="" draggable="false" />
+      <div class="ac-main">
+        <div class="ac-name-row">
+          <span id="acName" class="ac-name"></span>
+          <a id="acLink" class="ac-link" href="#" target="_blank" rel="noreferrer" title="打开主页">↗</a>
+        </div>
+        <p id="acTagline" class="ac-tagline"></p>
+      </div>
+      <button id="acFollow" class="ac-follow" type="button">
+        <span class="ac-follow-ico">＋</span><span id="acFollowText">关注</span>
+      </button>
+    </div>
+    <button id="acDismiss" class="ac-dismiss" type="button" title="本次关闭；点右侧「关注」后不再显示">
+      ✕ 点击关闭（点右侧关注作者后不再显示）
+    </button>
+  </section>
+
+  <main class="app-body">
+    <!-- ============ 1. 控制区 ============ -->
+    <section class="card">
+      <div class="actions">
+        <button id="btnStart" class="btn btn-primary" disabled>
+          <span class="ico">▶</span><span>开始自动取关</span>
+        </button>
+        <button id="btnStop" class="btn btn-danger" disabled>
+          <span class="ico">■</span><span>停止</span>
+        </button>
+      </div>
+      <label class="switch-row switch-row-sm">
+        <span>演练模式（只扫描不真正取关）</span>
+        <input type="checkbox" id="dryRun" class="switch" />
+      </label>
+    </section>
+
+    <!-- ============ 2. 状态看板 ============ -->
+    <section class="card">
+      <div class="card-title">运行状态</div>
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-num" id="statStatus">待机</div>
+          <div class="stat-label">当前状态</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num" id="statScanned">0</div>
+          <div class="stat-label">已扫描</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num accent" id="statUnfollowed">0</div>
+          <div class="stat-label">已取关</div>
+        </div>
+      </div>
+      <div class="substats">
+        <span>白名单跳过 <b id="statWhite">0</b></span>
+        <span>互关跳过 <b id="statMutual">0</b></span>
+        <span>失败 <b id="statFailed">0</b></span>
+      </div>
+      <div class="progress">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <div class="progress-caption">
+        <span id="progressText">0 / 0</span>
+        <span id="currentHandle" class="muted"></span>
+      </div>
+      <div class="log" id="logBox" aria-live="polite"></div>
+    </section>
+
+    <!-- ============ 3. 过滤设置 ============ -->
+    <section class="card">
+      <div class="card-title">过滤设置</div>
+
+      <label class="switch-row">
+        <span>互关保护（不取关互相关注的用户）</span>
+        <input type="checkbox" id="protectMutual" class="switch" checked />
+      </label>
+
+      <div class="field">
+        <label class="field-label" for="whitelistInput">
+          白名单 <span class="muted">（输入 @handle 后回车添加）</span>
+        </label>
+        <div class="tag-input">
+          <div id="tagList" class="tag-list"></div>
+          <input
+            id="whitelistInput"
+            type="text"
+            placeholder="例如 @elonmusk"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <div class="tag-actions">
+          <span class="muted" id="whiteCount">共 0 个</span>
+          <button id="btnClearWhite" class="btn-mini">清空白名单</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 4. 安全设置 ============ -->
+    <section class="card">
+      <div class="card-title">安全设置</div>
+
+      <div class="field">
+        <label class="field-label">
+          取关间隔 <b id="delayLabel">5 – 10 秒</b>
+        </label>
+        <div class="range-row">
+          <span class="muted">下限</span>
+          <input type="range" id="delayMin" min="1" max="60" step="1" value="5" />
+          <output id="delayMinVal">5s</output>
+        </div>
+        <div class="range-row">
+          <span class="muted">上限</span>
+          <input type="range" id="delayMax" min="1" max="120" step="1" value="10" />
+          <output id="delayMaxVal">10s</output>
+        </div>
+      </div>
+
+      <div class="field field-inline">
+        <label class="field-label" for="maxUnfollow">单次最大取关数</label>
+        <input type="number" id="maxUnfollow" min="1" max="1000" step="1" value="50" />
+      </div>
+    </section>
+
+    <p class="footer-note">
+      仅在 <code>x.com/*/following</code> 页面生效。脚本会跳过已处理用户，避免重复操作。
+    </p>
+  </main>
+
+  <!-- 轻量 toast：作者卡片关注结果等一次性反馈 -->
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

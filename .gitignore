@@ -1,0 +1,14 @@
+# 工作区内部记忆 / 日志，不随仓库分发
+.workbuddy/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+.vscode/
+.idea/
+
+# 打包产物
+dist/
+*.zip

@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "X 自动取关助手",
+  "version": "1.0.0",
+  "description": "在 X (Twitter) 的“正在关注”页面，按白名单与互关保护规则，安全地批量自动取关。",
+  "minimum_chrome_version": "116",
+
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*"
+  ],
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "action": {
+    "default_title": "X 自动取关助手"
+  },
+
+  "side_panel": {
+    "default_path": "sidepanel/index.html"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["content/content-script.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

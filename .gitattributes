@@ -1,0 +1,10 @@
+# 统一换行符，避免 Windows 检出时 LF → CRLF 造成整文件 diff
+* text=auto eol=lf
+
+# 二进制资源保持原样
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
