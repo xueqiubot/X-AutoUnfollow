@@ -15,6 +15,9 @@
 #
 # -Flat：不套文件夹，manifest.json 直接位于 zip 根目录（旧行为）。
 #
+# 发布纪律：默认拒绝在「工作区不干净」（有未提交改动）时打包 —— 否则会把未提交的
+# README 之类的改动打进包里，而 zip 看起来又完全正常。确需临时打包用 -AllowDirty。
+#
 # 仅包含运行期文件（tools/ 等开发期资源不打包）。
 #
 # 实现要点：
@@ -27,7 +30,8 @@
 [CmdletBinding()]
 param(
   [string]$Version,
-  [switch]$Flat
+  [switch]$Flat,
+  [switch]$AllowDirty
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +44,15 @@ if (-not $Version) {
   $Version = (Get-Content (Join-Path $root 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
 }
 if (-not $Version) { throw '无法确定版本号：manifest.json 缺少 version 字段' }
+
+# 发布纪律：zip 应只来自已提交内容。工作区有未提交改动时拒绝打包，避免把未提交的
+# README 等改动打进包里 —— 这种 zip 表面完全正常，肉眼和哈希都看不出问题。
+if ((Test-Path (Join-Path $root '.git')) -and -not $AllowDirty) {
+  $dirty = @(& git -C $root status --porcelain 2>$null)
+  if ($LASTEXITCODE -eq 0 -and $dirty.Count -gt 0) {
+    throw "工作区不干净，拒绝打包。请先提交改动，或加 -AllowDirty 强行打包。未提交项：`n  $($dirty -join "`n  ")"
+  }
+}
 
 $name  = "X-AutoUnfollow-v$Version"
 $dist  = Join-Path $root 'dist'
