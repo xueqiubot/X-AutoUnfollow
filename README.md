@@ -67,6 +67,7 @@ x-取关助手/
 ├── icons/                   # 16 / 48 / 128 图标
 └── tools/                   # 开发期工具（不参与扩展运行）
     ├── gen_icons.py         # 图标生成（纯标准库）
+    ├── build-release.ps1    # 打包 release zip
     ├── test-content-script.cjs   # jsdom 端到端测试
     └── test-follow-profile.cjs   # 作者卡片关注逻辑测试
 ```
@@ -108,7 +109,25 @@ NODE_PATH=<node_workspace>/node_modules node tools/test-follow-profile.cjs
 单次上限、演练模式、滚动懒加载与去重、STOP 中断、连续失败熔断、非目标页面拒绝；
 以及作者卡片的 `followed / already / unavailable / failed` 四种结果。
 
-## 七、已知限制
+## 七、打包发布
+
+```powershell
+# 版本号自动取 manifest.json 的 version，产物为 dist/X-AutoUnfollow-v<version>.zip
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-release.ps1
+
+# 也可显式指定版本号
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/build-release.ps1 -Version 1.1.0
+```
+
+打出的 zip **根目录即 `manifest.json`**，解压后可直接用「加载已解压的扩展程序」载入；
+仅含运行期文件（`tools/`、`.workbuddy/` 等开发期资源不入包）。
+脚本用 .NET `ZipArchive` 手写条目（条目名统一正斜杠，时间戳固定 1980-01-01），
+相同输入产出字节一致的 zip。
+
+> Windows PowerShell 5.1 默认按 ANSI 读取无 BOM 的 UTF-8 文本，
+> 因此 `tools/build-release.ps1` 自带 BOM，读取 `manifest.json` 时也显式指定了 `-Encoding UTF8`。
+
+## 八、已知限制
 
 - 页面结构依赖 X 的 `data-testid`，X 若大改版可能需同步更新选择器（见第五节）
 - 标签页处于后台但未休眠时脚本仍会执行；若标签页被浏览器彻底冻结，任务会暂停（侧边栏看门狗会在失联时把状态拉回）
