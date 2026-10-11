@@ -58,7 +58,33 @@
       </label>
     </section>
 
-    <!-- ============ 2. 状态看板 ============ -->
+    <!-- ============ 2. 未互关标记（手动取关） ============ -->
+    <!-- 在页面上把「没有回关你」的用户标红，由用户自己点页面按钮取关；
+         与自动取关互不干扰，可同时开启。开启状态写入 storage，刷新后自动恢复。 -->
+    <section class="card">
+      <div class="card-title">未互关标记 · 手动取关</div>
+      <button id="btnHighlight" class="btn btn-hl" disabled>
+        <span class="ico">◎</span><span id="btnHighlightText">标记未互关用户</span>
+      </button>
+      <div class="hl-legend">
+        <span class="hl-chip hl-chip-danger">未互关</span>
+        <span class="hl-chip hl-chip-ok">互关</span>
+        <span class="hl-chip hl-chip-info">白名单</span>
+        <span class="hl-chip hl-chip-dim">已取关</span>
+      </div>
+      <div class="substats">
+        <span>未互关 <b id="hlNonMutual">0</b></span>
+        <span>互关 <b id="hlMutual">0</b></span>
+        <span>白名单 <b id="hlWhite">0</b></span>
+        <span>已取关 <b id="hlDone">0</b></span>
+      </div>
+      <p class="hl-hint">
+        开启后，页面上<b>没有回关你</b>的用户会被标红，你手动点页面上的「正在关注」按钮取关即可；
+        标记随滚动持续生效，已取关的那行会变灰。
+      </p>
+    </section>
+
+    <!-- ============ 3. 状态看板 ============ -->
     <section class="card">
       <div class="card-title">运行状态</div>
       <div class="stats">
@@ -90,7 +116,7 @@
       <div class="log" id="logBox" aria-live="polite"></div>
     </section>
 
-    <!-- ============ 3. 过滤设置 ============ -->
+    <!-- ============ 4. 过滤设置 ============ -->
     <section class="card">
       <div class="card-title">过滤设置</div>
 
@@ -120,7 +146,7 @@
       </div>
     </section>
 
-    <!-- ============ 4. 安全设置 ============ -->
+    <!-- ============ 5. 安全设置 ============ -->
     <section class="card">
       <div class="card-title">安全设置</div>
 

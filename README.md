@@ -1,6 +1,7 @@
 # X 自动取关助手（Chrome 侧边栏扩展）
 
-在 X (Twitter) 的「正在关注」页面上，按**白名单**与**互关保护**规则，安全地批量自动取关。
+在 X (Twitter) 的「正在关注」页面上，**高亮标出没有回关你的用户**以便手动取关，
+也可按**白名单**与**互关保护**规则安全地批量自动取关。
 Chrome Extension Manifest V3 + `chrome.sidePanel`，全程本地运行，不依赖任何外部服务。
 
 ---
@@ -18,13 +19,14 @@ Chrome Extension Manifest V3 + `chrome.sidePanel`，全程本地运行，不依�
 
 1. 浏览器打开 **`https://x.com/{你的用户名}/following`**（X 的「正在关注」页面）
 2. 侧边栏顶部环境指示应变为绿色 **「已就绪：正在关注页面」**
-3. 按需配置：
+3. 想自己一个个取关 → 点 **标记未互关用户**（见第三点六节，页面会标红未回关你的人）
+4. 想批量自动取关 → 按需配置：
    - **互关保护**（默认开）：检测到 `Follows you / 关注了你` 的用户会被跳过
    - **白名单**：输入 `@handle` 后回车，支持逗号 / 空格批量粘贴；点标签上的 `✕` 删除
    - **取关间隔**：默认 5 – 10 秒随机浮动
    - **单次最大取关数**：默认 50
    - **演练模式**：只扫描、只统计，不产生任何点击（建议首次使用先跑一次）
-4. 点 **开始自动取关**；随时点 **停止** 可立即中断
+5. 点 **开始自动取关**；随时点 **停止** 可立即中断
 
 配置会写入 `chrome.storage.local`，下次打开自动恢复。
 
@@ -51,6 +53,31 @@ Chrome Extension Manifest V3 + `chrome.sidePanel`，全程本地运行，不依�
 
 > 该卡片已抽成可复用组件包，见工作区根目录 `作者卡片组件/`。
 
+## 三点六、未互关标记（手动取关）
+
+不想让脚本替你点按钮时，用这条「只标记、不动手」的路径：点侧边栏 **标记未互关用户**，
+扩展会在页面上给每个用户打上颜色标签，取关动作完全由你自己点 X 页面上的「正在关注」按钮完成。
+
+| 页面标记 | 含义 |
+| --- | --- |
+| 🔴 **未互关** | 对方没有回关你 —— 要清理的就是这些人（整行淡红底 + 左侧红条） |
+| 🟢 **互关** | 对方关注了你，正常情况建议保留 |
+| 🔵 **白名单** | 在白名单里，即使未互关也不标红（避免手滑） |
+| ⚪ **已取关** | 你刚手动取关的人 —— 整行变灰，方便确认操作已生效 |
+
+- 侧边栏实时统计 **未互关 / 互关 / 白名单 / 已取关** 四类人数（按 `@handle` 去重，滚过就记住）
+- 标记**随滚动持续生效**：X 的关注列表是虚拟滚动（节点会被回收复用），
+  扩展用 `MutationObserver` + 定时兜底反复扫描，滚到哪标到哪，节点复用后也会补回标记
+- 标记只写在节点的 `class` / `data-*` 上、徽标用 CSS `::after` 渲染，**不插入子节点**，
+  不会打乱 X 的布局，也不会和 React 的渲染打架
+- 点击 **停止标记** 会立刻清除页面上所有标记（按钮回到「标记未互关用户」）
+- 开启状态写入 `chrome.storage.local`：**刷新页面或重开侧边栏会自动恢复标记**，不用每次重开
+- 与自动取关**互不干扰，可同时开启**（自动任务跑着时也能手动清理剩下的）
+- 白名单只影响「标不标红」：手动取关完全由你决定，扩展不会（也无法）阻拦你点哪一行
+
+> 判定依据是 X 在关注列表里显示的 `Follows you / 关注了你 / 跟隨了你` 标签，
+> 没有这个标签即视为未互关；X 若改版需要同步 `content/content-script.js` 里的文案常量。
+
 ## 四、目录结构
 
 ```
@@ -58,18 +85,19 @@ x-取关助手/
 ├── manifest.json            # MV3 配置与权限声明
 ├── background.js            # Service Worker：生命周期 + 三方消息总线
 ├── sidepanel/
-│   ├── index.html           # 侧边栏 UI（含作者卡片 + toast）
+│   ├── index.html           # 侧边栏 UI（含作者卡片 + 未互关标记 + toast）
 │   ├── style.css            # X 深色风格样式
 │   └── sidepanel.js         # 交互逻辑 / 配置持久化 / 状态同步 / 作者卡片
 ├── content/
-│   └── content-script.js    # 页面注入脚本：解析 / 过滤 / 取关 / 滚动 / 关注作者
+│   └── content-script.js    # 页面注入脚本：解析 / 过滤 / 取关 / 滚动 / 关注作者 / 未互关标记
 ├── profile-avatar.jpg       # 作者卡头像
 ├── icons/                   # 16 / 48 / 128 图标
 └── tools/                   # 开发期工具（不参与扩展运行）
     ├── gen_icons.py         # 图标生成（纯标准库）
     ├── build-release.ps1    # 打包 release zip
-    ├── test-content-script.cjs   # jsdom 端到端测试
-    └── test-follow-profile.cjs   # 作者卡片关注逻辑测试
+    ├── test-content-script.cjs   # jsdom 端到端测试（含未互关标记）
+    ├── test-follow-profile.cjs   # 作者卡片关注逻辑测试
+    └── test-sidepanel-highlight.cjs  # 侧边栏「未互关标记」链路测试
 ```
 
 ## 五、选择器与多语言适配
@@ -89,6 +117,8 @@ const SEL = {
 - 互关标识：同时匹配 `Follows you` / `关注了你` / `跟隨了你`
 - 操作按钮：优先 `data-testid`，失败则按文案 `Following / 正在关注 / Unfollow / 取消关注` 兜底
 - 确认弹窗：优先 `data-testid="confirmationSheetConfirm"`，失败则在弹窗内按 `Unfollow / 取消关注` 文案查找
+- 未互关标记：四态文案在 `HL_KINDS`、页面内样式在 `HL_CSS`（徽标走 `::after` + `data-xuf-tag`），
+  判定范围仍是 `SEL.USER_CELL`；X 若改版只需同步这两处常量
 
 ## 六、开发期验证
 
@@ -103,10 +133,14 @@ NODE_PATH=<node_workspace>/node_modules node tools/test-content-script.cjs
 
 # 作者卡片关注逻辑测试
 NODE_PATH=<node_workspace>/node_modules node tools/test-follow-profile.cjs
+
+# 侧边栏「未互关标记」链路测试（chrome API 打桩）
+NODE_PATH=<node_workspace>/node_modules node tools/test-sidepanel-highlight.cjs
 ```
 
 测试用 jsdom 模拟 X 页面 DOM，覆盖：中英文界面、互关保护开关、白名单、
 单次上限、演练模式、滚动懒加载与去重、STOP 中断、连续失败熔断、非目标页面拒绝；
+未互关标记的三态判定与计数、手动取关后转「已取关」、关闭后清理标记、动态新增节点自动标记；
 以及作者卡片的 `followed / already / unavailable / failed` 四种结果。
 
 ## 七、打包发布

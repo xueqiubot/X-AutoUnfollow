@@ -52,14 +52,20 @@ function buildPage(cells) {
 }
 
 // ---------------------------------------------------------------- 运行夹具
-async function runScenario({ cells, config, testTimings = {}, stopAfterMs = 0, lazyBatches = 0 }) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 建一个模拟 X「正在关注」页面的 jsdom 环境（含 chrome API 桩与交互模拟）。
+ * 自动取关与未互关标记两组用例共用，避免两份几乎一样的 mock 漂移。
+ */
+function makeDom({ cells, url = "https://x.com/alice/following", testTimings = {}, lazyBatches = 0 }) {
   const messages = [];
   const listeners = [];
   let batchesLeft = lazyBatches;
   let batchNo = 0;
 
   const dom = new JSDOM(buildPage(cells), {
-    url: "https://x.com/alice/following",
+    url,
     runScripts: "dangerously",
     pretendToBeVisual: true,
     beforeParse(window) {
@@ -75,6 +81,9 @@ async function runScenario({ cells, config, testTimings = {}, stopAfterMs = 0, l
           maxConsecutiveStop: 3,
           scrollSettleMs: 20,
           scrollWaitMs: 40,
+          highlightScanThrottleMs: 20,
+          highlightTickMs: 60,
+          highlightReportMs: 20,
         },
         testTimings
       );
@@ -148,14 +157,24 @@ async function runScenario({ cells, config, testTimings = {}, stopAfterMs = 0, l
     },
   });
 
-  // 注入 content script
-  dom.window.eval(SRC);
+  return { dom, win: dom.window, messages, listeners };
+}
 
-  const dispatch = (msg) => {
+function makeDispatcher(listeners) {
+  return (msg) => {
     let resp = null;
     for (const fn of listeners) fn(msg, {}, (r) => (resp = r));
     return resp;
   };
+}
+
+async function runScenario({ cells, config, testTimings = {}, stopAfterMs = 0, lazyBatches = 0 }) {
+  const { dom, win, messages, listeners } = makeDom({ cells, testTimings, lazyBatches });
+
+  // 注入 content script
+  win.eval(SRC);
+
+  const dispatch = makeDispatcher(listeners);
 
   const started = dispatch({ to: "content", type: "START", config });
   check("START 指令返回 ok", started && started.ok === true);
@@ -167,14 +186,40 @@ async function runScenario({ cells, config, testTimings = {}, stopAfterMs = 0, l
       stopAfterMs = 0;
     }
     if (messages.some((m) => m.kind === "FINISH")) break;
-    await new Promise((r) => setTimeout(r, 30));
+    await sleep(30);
   }
 
   const finish = [...messages].reverse().find((m) => m.kind === "FINISH");
   const logs = messages.filter((m) => m.kind === "LOG").map((m) => m.data.message);
-  const win = dom.window;
 
   return { messages, finish, logs, win, dom };
+}
+
+// ------------------------------------------------- 未互关标记（手动取关）夹具
+async function runHighlightScenario({ cells, config = {}, url, testTimings = {} }) {
+  const { dom, win, messages, listeners } = makeDom({ cells, url, testTimings });
+  win.eval(SRC);
+  const dispatch = makeDispatcher(listeners);
+
+  const resp = dispatch({ to: "content", type: "HIGHLIGHT_START", config });
+  await sleep(200); // 等首轮扫描 + 上报
+
+  const doc = win.document;
+  return {
+    dom,
+    win,
+    doc,
+    messages,
+    dispatch,
+    resp,
+    logs: messages.filter((m) => m.kind === "LOG").map((m) => m.data.message),
+    cell: (h) => doc.querySelector(`[data-testid="UserCell"][data-handle="${h}"]`),
+    lastHl: () => [...messages].reverse().find((m) => m.kind === "HIGHLIGHT"),
+    stop() {
+      dispatch({ to: "content", type: "HIGHLIGHT_STOP" });
+      win.close(); // 关掉 jsdom 定时器，避免测试进程被 interval 挂住
+    },
+  };
 }
 
 // ================================================================ 用例
@@ -324,6 +369,141 @@ async function runScenario({ cells, config, testTimings = {}, stopAfterMs = 0, l
     const msgs = dom.window.__M || [];
     check("未执行任何取关", !msgs.some((m) => m.kind === "STATE" && m.data.unfollowed > 0));
     check("日志提示非目标页面", msgs.some((m) => m.kind === "LOG" && /不是“正在关注”页面/.test(m.data.message)));
+  }
+
+  console.log("\n=== 用例 10：未互关标记 —— 未互关 / 互关 / 白名单 三态 ===");
+  {
+    const ctx = await runHighlightScenario({
+      cells: [
+        userCell({ id: 1001, handle: "alice", name: "Alice" }),
+        userCell({ id: 1002, handle: "bob", name: "Bob", followsYou: true }),
+        userCell({ id: 1003, handle: "carol", name: "Carol" }),
+      ],
+      config: { whitelist: ["carol"], protectMutual: true },
+    });
+
+    check("HIGHLIGHT_START 返回 ok", ctx.resp && ctx.resp.ok === true, JSON.stringify(ctx.resp));
+    check("样式表已注入页面", !!ctx.doc.getElementById("xuf-highlight-style"));
+    check("alice（未互关）被标红", ctx.cell("alice").classList.contains("xuf-nonmutual"));
+    check("bob（互关）标记为互关", ctx.cell("bob").classList.contains("xuf-mutual"));
+    check("carol（白名单）标记为白名单", ctx.cell("carol").classList.contains("xuf-whitelist"));
+    check(
+      "徽标文案写入 data-xuf-tag",
+      ctx.cell("alice").getAttribute("data-xuf-tag") === "未互关",
+      String(ctx.cell("alice").getAttribute("data-xuf-tag"))
+    );
+
+    const hl = ctx.lastHl()?.data || {};
+    check(
+      "上报计数：未互关 1 / 互关 1 / 白名单 1",
+      hl.nonMutual === 1 && hl.mutual === 1 && hl.whitelisted === 1,
+      JSON.stringify(hl)
+    );
+    check("上报 on=true", hl.on === true, JSON.stringify(hl));
+    ctx.stop();
+  }
+
+  console.log("\n=== 用例 11：手动取关后该行转为「已取关」并变灰 ===");
+  {
+    const ctx = await runHighlightScenario({
+      cells: [
+        userCell({ id: 1101, handle: "alice", name: "Alice" }),
+        userCell({ id: 1102, handle: "bob", name: "Bob", followsYou: true }),
+      ],
+      config: {},
+    });
+    check("初始 alice 为未互关", ctx.cell("alice").classList.contains("xuf-nonmutual"));
+
+    // 模拟用户手动取关：点按钮 -> 确认弹窗 -> 确认
+    ctx.cell("alice").querySelector('[data-testid$="-unfollow"]').click();
+    await sleep(90);
+    const confirm = ctx.doc.querySelector(
+      '[data-testid="confirmationSheetConfirm"], .confirm-fallback'
+    );
+    check("确认弹窗已出现", !!confirm);
+    confirm.click();
+    await sleep(400); // 等按钮翻转 + 下一轮扫描
+
+    check(
+      "alice 转为「已取关」标记",
+      ctx.cell("alice").classList.contains("xuf-unfollowed"),
+      ctx.cell("alice").className
+    );
+    check("已取关后不再标红", !ctx.cell("alice").classList.contains("xuf-nonmutual"));
+    check(
+      "徽标文案变为「已取关」",
+      ctx.cell("alice").getAttribute("data-xuf-tag") === "已取关",
+      String(ctx.cell("alice").getAttribute("data-xuf-tag"))
+    );
+
+    const hl = ctx.lastHl()?.data || {};
+    check(
+      "计数：未互关 0 / 已取关 1（互关仍为 1）",
+      hl.nonMutual === 0 && hl.done === 1 && hl.mutual === 1,
+      JSON.stringify(hl)
+    );
+    ctx.stop();
+  }
+
+  console.log("\n=== 用例 12：关闭标记 -> 页面标记全部清除 ===");
+  {
+    const ctx = await runHighlightScenario({
+      cells: [userCell({ id: 1201, handle: "alice", name: "Alice" })],
+      config: {},
+    });
+    check("开启后已标红", ctx.cell("alice").classList.contains("xuf-nonmutual"));
+
+    ctx.dispatch({ to: "content", type: "HIGHLIGHT_STOP" });
+    await sleep(120);
+
+    const cell = ctx.cell("alice");
+    check(
+      "标记类已移除",
+      !cell.className.includes("xuf-"),
+      cell.className
+    );
+    check("徽标属性已移除", !cell.hasAttribute("data-xuf-tag"));
+    const hl = ctx.lastHl()?.data || {};
+    check("上报 on=false 且计数归零", hl.on === false && hl.nonMutual === 0, JSON.stringify(hl));
+    ctx.win.close();
+  }
+
+  console.log("\n=== 用例 13：滚动/懒加载新增的节点会被自动标记 ===");
+  {
+    const ctx = await runHighlightScenario({
+      cells: [userCell({ id: 1301, handle: "alice", name: "Alice" })],
+      config: {},
+    });
+    ctx.doc
+      .getElementById("root")
+      .insertAdjacentHTML("beforeend", userCell({ id: 1302, handle: "newbie", name: "Newbie" }));
+    await sleep(300);
+
+    check("新增节点被自动标红", ctx.cell("newbie").classList.contains("xuf-nonmutual"));
+    const hl = ctx.lastHl()?.data || {};
+    check("计数已包含新增用户（未互关 2）", hl.nonMutual === 2, JSON.stringify(hl));
+    ctx.stop();
+  }
+
+  console.log("\n=== 用例 14：非 following 页面拒绝开启标记 ===");
+  {
+    const ctx = await runHighlightScenario({
+      cells: [userCell({ id: 1401, handle: "alice", name: "Alice" })],
+      url: "https://x.com/home",
+      config: {},
+    });
+    check(
+      "HIGHLIGHT_START 返回 ok=false",
+      ctx.resp && ctx.resp.ok === false,
+      JSON.stringify(ctx.resp)
+    );
+    check("页面未被打标", !ctx.cell("alice").classList.contains("xuf-nonmutual"));
+    check(
+      "日志提示非目标页面",
+      ctx.logs.some((l) => /不是“正在关注”页面/.test(l)),
+      ctx.logs.join(" | ")
+    );
+    ctx.win.close();
   }
 
   console.log(`\n========== 结果：${pass} 通过 / ${fail} 失败 ==========`);

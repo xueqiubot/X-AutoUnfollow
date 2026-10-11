@@ -9,6 +9,7 @@
 
   const STORAGE_KEY = "xuf_config";
   const AUTHOR_CARD_KEY = "xuf_author_card";
+  const HIGHLIGHT_KEY = "xuf_highlight";
   const FOLLOWING_RE = /^https?:\/\/(?:www\.)?(?:x|twitter)\.com\/[^/]+\/following(?:[/?#].*)?$/i;
 
   const DEFAULT_CONFIG = {
@@ -63,6 +64,13 @@
     delayMaxVal: $("delayMaxVal"),
     delayLabel: $("delayLabel"),
     maxUnfollow: $("maxUnfollow"),
+    // 未互关标记（手动取关）
+    btnHighlight: $("btnHighlight"),
+    btnHighlightText: $("btnHighlightText"),
+    hlNonMutual: $("hlNonMutual"),
+    hlMutual: $("hlMutual"),
+    hlWhite: $("hlWhite"),
+    hlDone: $("hlDone"),
     // 作者卡片
     authorCard: $("authorCard"),
     acAvatar: $("acAvatar"),
@@ -84,6 +92,11 @@
   let envOk = false;
   let currentTabId = null;
   let watchdog = null;
+  // 未互关标记：enabled 是持久化偏好（页面刷新/重开侧边栏后自动恢复），
+  // highlightOn 是当前标签页的实际状态（以内容脚本上报为准）。
+  let highlight = { enabled: false };
+  let highlightOn = false;
+  let hlSyncTimer = null;
   const MAX_LOG_LINES = 200;
 
   // =============================================================== 持久化
@@ -167,6 +180,7 @@
         config.whitelist = config.whitelist.filter((x) => x !== h);
         renderWhitelist();
         saveConfig();
+        refreshHighlightConfig();
       });
       tag.append(txt, btn);
       el.tagList.appendChild(tag);
@@ -204,11 +218,14 @@
     }
 
     syncButtons();
+    scheduleHighlightSync();
   }
 
   function syncButtons() {
     el.btnStart.disabled = running || !envOk;
     el.btnStop.disabled = !running;
+    // 标记模式是手动取关路径，不参与运行锁定：任务跑着也能随时开关
+    el.btnHighlight.disabled = !envOk;
     // 运行时锁定配置，避免中途改动导致上下游口径不一致
     el.protectMutual.disabled = running;
     el.delayMin.disabled = running;
@@ -345,6 +362,115 @@
     renderAuthorCard();
   }
 
+  // ======================================================== 未互关标记（手动）
+  // 与自动取关是两条互不干扰的路径：
+  //   - 自动取关：内容脚本自己点按钮（受白名单/互关保护/间隔/上限约束）；
+  //   - 未互关标记：只在页面上给「没有回关你」的用户打标，取关动作由用户手动完成。
+  // 因此这里既不复用 running 状态，也不锁定配置；两者可以同时开启。
+  //
+  // 开启状态持久化到 storage：页面刷新后内容脚本会重置，侧边栏在环境就绪时自动补发一次
+  // HIGHLIGHT_START（幂等），用户不必每次刷新后重新点一遍。
+
+  async function loadHighlight() {
+    try {
+      const raw = await chrome.storage.local.get(HIGHLIGHT_KEY);
+      highlight = { enabled: !!(raw[HIGHLIGHT_KEY] || {}).enabled };
+    } catch (e) {
+      console.warn("[XUF] 读取标记偏好失败", e);
+      highlight = { enabled: false };
+    }
+  }
+
+  async function saveHighlight() {
+    try {
+      await chrome.storage.local.set({ [HIGHLIGHT_KEY]: highlight });
+    } catch (e) {
+      console.warn("[XUF] 保存标记偏好失败", e);
+    }
+  }
+
+  function renderHighlight(state) {
+    const s = state || {};
+    el.hlNonMutual.textContent = fmt(s.nonMutual || 0);
+    el.hlMutual.textContent = fmt(s.mutual || 0);
+    el.hlWhite.textContent = fmt(s.whitelisted || 0);
+    el.hlDone.textContent = fmt(s.done || 0);
+
+    highlightOn = !!s.on;
+    el.btnHighlight.classList.toggle("is-on", highlightOn);
+    el.btnHighlightText.textContent = highlightOn ? "停止标记" : "标记未互关用户";
+    syncButtons();
+  }
+
+  /** 开启/关闭标记（quiet=true 用于「刷新后自动恢复」，不刷日志） */
+  async function setHighlight(on, opts = {}) {
+    await saveConfig(); // 让内容脚本拿到最新的白名单
+    const resp = await sendToContent({
+      type: on ? "HIGHLIGHT_START" : "HIGHLIGHT_STOP",
+      config,
+    });
+
+    if (!resp.ok) {
+      if (!opts.quiet) appendLog(resp.error || "标记指令发送失败", "err");
+      return false;
+    }
+
+    highlight.enabled = on;
+    await saveHighlight();
+    renderHighlight(resp.data?.state?.highlight || { on });
+    if (!opts.quiet) {
+      appendLog(
+        on
+          ? "已开启「未互关」标记：标红的是没有回关你的用户，手动取关即可"
+          : "已关闭「未互关」标记",
+        on ? "ok" : "warn"
+      );
+    }
+    return true;
+  }
+
+  /** 白名单变化后，让内容脚本按新配置重扫一遍（幂等） */
+  function refreshHighlightConfig() {
+    if (!highlightOn || !envOk) return;
+    void sendToContent({ type: "HIGHLIGHT_START", config }).then((resp) => {
+      if (resp.ok) renderHighlight(resp.data?.state?.highlight);
+    });
+  }
+
+  function scheduleHighlightSync(delay = 350) {
+    if (hlSyncTimer) clearTimeout(hlSyncTimer);
+    hlSyncTimer = setTimeout(() => {
+      hlSyncTimer = null;
+      void syncHighlightForTab();
+    }, delay);
+  }
+
+  /**
+   * 对齐「当前标签页」的标记状态：
+   *  - 非目标页面 → 只清本地视图，不动持久化偏好；
+   *  - 目标页面但内容脚本里没开（例如刚刷新） → 按偏好自动补开；
+   *  - 其余情况以内容脚本上报的状态为准。
+   */
+  async function syncHighlightForTab() {
+    if (!envOk || typeof currentTabId !== "number") {
+      renderHighlight(null);
+      return;
+    }
+
+    const resp = await sendToContent({ type: "GET_STATE" });
+    const state = resp.ok ? resp.data?.state?.highlight : null;
+
+    if (state && state.on) {
+      renderHighlight(state);
+      return;
+    }
+    if (highlight.enabled) {
+      await setHighlight(true, { quiet: true });
+      return;
+    }
+    renderHighlight(state || { on: false });
+  }
+
   // ================================================================ Toast
   let toastTimer = null;
   function toast(msg, tone = "") {
@@ -450,6 +576,11 @@
         stopWatchdog();
         syncButtons();
         break;
+      case "HIGHLIGHT":
+        // 只认当前活动标签页的标记数据，避免多开 following 页面时统计串台
+        if (msg.tabId != null && currentTabId != null && msg.tabId !== currentTabId) break;
+        renderHighlight(msg.data);
+        break;
       case "ERROR":
         appendLog(msg.data?.message || "未知错误", "err");
         break;
@@ -521,6 +652,18 @@
     else appendLog("已发送停止指令", "warn");
   });
 
+  // ---- 未互关标记：开关 ----
+  el.btnHighlight.addEventListener("click", async () => {
+    await refreshEnv();
+    if (!envOk) {
+      appendLog("请先在浏览器中打开 X 的“正在关注”页面", "warn");
+      return;
+    }
+    el.btnHighlight.disabled = true;
+    await setHighlight(!highlightOn);
+    syncButtons();
+  });
+
   // ---- 互关保护 ----
   el.protectMutual.addEventListener("change", () => {
     config.protectMutual = el.protectMutual.checked;
@@ -564,6 +707,7 @@
     el.whitelistInput.value = "";
     renderWhitelist();
     saveConfig();
+    refreshHighlightConfig();
     if (added) appendLog(`白名单新增 ${added} 个账号`, "ok");
     if (invalid.length) appendLog(`已忽略无效账号：${invalid.join(", ")}`, "warn");
   }
@@ -576,6 +720,7 @@
       config.whitelist.pop();
       renderWhitelist();
       saveConfig();
+      refreshHighlightConfig();
     }
   });
   el.whitelistInput.addEventListener("blur", addWhitelistFromInput);
@@ -585,6 +730,7 @@
     config.whitelist = [];
     renderWhitelist();
     saveConfig();
+    refreshHighlightConfig();
     appendLog("白名单已清空", "warn");
   });
 
@@ -628,7 +774,9 @@
   (async function init() {
     await loadConfig();
     await loadAuthorCard();
+    await loadHighlight();
     renderStats({ scanned: 0, unfollowed: 0, skippedWhitelist: 0, skippedMutual: 0, failed: 0, maxUnfollow: config.maxUnfollow });
+    renderHighlight(null);
     await refreshEnv();
     appendLog("面板已就绪");
   })();

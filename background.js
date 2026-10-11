@@ -35,7 +35,7 @@ enableActionClickToOpen();
 // ---------------------------------------------------------------------------
 // 2. 消息总线
 // ---------------------------------------------------------------------------
-const VALID_KINDS = new Set(["FORWARD", "STATE", "LOG", "FINISH", "READY", "ERROR"]);
+const VALID_KINDS = new Set(["FORWARD", "STATE", "LOG", "FINISH", "READY", "ERROR", "HIGHLIGHT"]);
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== "object") return;

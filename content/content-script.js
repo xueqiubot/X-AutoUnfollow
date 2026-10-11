@@ -126,6 +126,7 @@
       currentHandle: state.currentHandle,
       maxUnfollow: state.maxUnfollow,
       dryRun: state.dryRun,
+      highlight: hlSnapshot(),
     };
   }
 
@@ -456,6 +457,244 @@
     }
   }
 
+  // ================================================================ 未互关标记
+  // 「未互关标记」模式：把正在关注列表里**没有回关你**的用户在页面上标红，
+  // 由用户自己点页面上的取关按钮手动取关。与自动取关互不干扰，可同时开启。
+  //
+  // 实现要点：
+  //  - X 的关注列表是虚拟滚动（DOM 节点会被回收复用），只在 DOM 变更时打一次标是不够的，
+  //    必须「MutationObserver + 定时兜底」反复扫描当前 DOM，并用 data-xuf-mark 记住
+  //    每个 cell 已打的标，避免重复写 DOM；
+  //  - 标记只落在 cell 自身的 class / data-* 上，徽标用 CSS ::after 渲染（不插入子节点），
+  //    既不会被 React 的 diff 冲掉，也不会打乱 X 的原有布局；
+  //  - 计数按 @handle 去重累计（滚过就记住），数字只随浏览增长，不会因节点回收而抖动。
+
+  const HL = {
+    STYLE_ID: "xuf-highlight-style",
+    MARK_ATTR: "data-xuf-mark",
+    TAG_ATTR: "data-xuf-tag",
+    SIG_ATTR: "data-xuf-sig",
+    // 关注状态只看按钮，一个选择器搞定（用于快路径比对）
+    BTN_SEL: `${SEL.UNFOLLOW_BTN}, ${SEL.FOLLOW_BTN}`,
+    SCAN_THROTTLE_MS: Number(T.highlightScanThrottleMs) || 150,
+    TICK_MS: Number(T.highlightTickMs) || 1000,
+    REPORT_MS: Number(T.highlightReportMs) || 400,
+  };
+
+  // 四种标记：未互关（重点）/ 互关 / 白名单 / 已取关
+  const HL_KINDS = {
+    nonMutual: { cls: "xuf-nonmutual", label: "未互关" },
+    mutual: { cls: "xuf-mutual", label: "互关" },
+    whitelisted: { cls: "xuf-whitelist", label: "白名单" },
+    done: { cls: "xuf-unfollowed", label: "已取关" },
+  };
+  const HL_CLASSES = Object.keys(HL_KINDS).map((k) => HL_KINDS[k].cls);
+
+  const hl = {
+    on: false,
+    observer: null,
+    tickTimer: null,
+    scanTimer: null,
+    reportTimer: null,
+    lastReport: 0,
+    seen: new Map(), // handle(小写) -> kind
+  };
+
+  // 页面内样式：徽标走 ::after + attr(data-xuf-tag)，无需插入子节点
+  const HL_CSS = [
+    '[data-testid="UserCell"][data-xuf-tag]{position:relative}',
+    // 徽标尺寸刻意压到 14px 高并贴顶 2px：X 的 UserCell 里按钮是垂直居中的，
+    // 顶部只留得下 ~16px，这样徽标不会压到「正在关注」按钮（且 pointer-events:none 兜底）
+    '[data-testid="UserCell"][data-xuf-tag]::after{content:attr(data-xuf-tag);position:absolute;top:2px;right:10px;z-index:3;height:14px;line-height:14px;padding:0 6px;border-radius:999px;font-size:10px;font-weight:700;color:#fff;background:var(--xuf-tag-bg,#71767b);pointer-events:none;font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}',
+    '[data-testid="UserCell"].xuf-nonmutual{--xuf-tag-bg:#f4212e;background-color:rgba(244,33,46,.10)!important;box-shadow:inset 3px 0 0 0 #f4212e;outline:1px solid rgba(244,33,46,.5);outline-offset:-1px;border-radius:12px}',
+    '[data-testid="UserCell"].xuf-mutual{--xuf-tag-bg:#00ba7c;box-shadow:inset 3px 0 0 0 rgba(0,186,124,.75)}',
+    '[data-testid="UserCell"].xuf-whitelist{--xuf-tag-bg:#1d9bf0;box-shadow:inset 3px 0 0 0 rgba(29,155,240,.75)}',
+    '[data-testid="UserCell"].xuf-unfollowed{--xuf-tag-bg:#71767b;opacity:.5;box-shadow:inset 3px 0 0 0 rgba(113,118,123,.9)}',
+  ].join("\n");
+
+  function injectHighlightStyle() {
+    if (document.getElementById(HL.STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = HL.STYLE_ID;
+    style.textContent = HL_CSS;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  /** 该 cell 是否已经不在「正在关注」状态（用户已手动取关 / 自动取关） */
+  function isNotFollowing(cell) {
+    if (cell.querySelector(SEL.FOLLOW_BTN)) return true;
+    return !!findButtonByText(cell, TEXT.follow);
+  }
+
+  /** 判定一个 cell 应打的标记 */
+  function hlKindOf(cell, handle, followsYou) {
+    if (isNotFollowing(cell)) return "done";
+    if (whitelistSet.has(String(handle).toLowerCase())) return "whitelisted";
+    return followsYou ? "mutual" : "nonMutual";
+  }
+
+  function hlApplyMark(cell, kind) {
+    const meta = HL_KINDS[kind];
+    for (const cls of HL_CLASSES) cell.classList.toggle(cls, cls === meta.cls);
+    cell.setAttribute(HL.TAG_ATTR, meta.label);
+    cell.setAttribute(HL.MARK_ATTR, kind);
+  }
+
+  function hlClearMarks() {
+    for (const cell of document.querySelectorAll(`[${HL.TAG_ATTR}]`)) {
+      for (const cls of HL_CLASSES) cell.classList.remove(cls);
+      cell.removeAttribute(HL.TAG_ATTR);
+      cell.removeAttribute(HL.MARK_ATTR);
+      cell.removeAttribute(HL.SIG_ATTR);
+    }
+  }
+
+  function hlCounts() {
+    const c = { nonMutual: 0, mutual: 0, whitelisted: 0, done: 0 };
+    for (const v of hl.seen.values()) if (c[v] != null) c[v]++;
+    return c;
+  }
+
+  function hlSnapshot() {
+    return { on: hl.on, ...hlCounts(), seen: hl.seen.size };
+  }
+
+  function hlFlushReport() {
+    if (hl.reportTimer) {
+      clearTimeout(hl.reportTimer);
+      hl.reportTimer = null;
+    }
+    hl.lastReport = Date.now();
+    send({ kind: "HIGHLIGHT", data: hlSnapshot() });
+  }
+
+  /** 上报节流：DOM 变动频繁时最多每 HL.REPORT_MS 报一次，并保证最后一次一定送达 */
+  function hlReport(force) {
+    if (force) {
+      hlFlushReport();
+      return;
+    }
+    const wait = HL.REPORT_MS - (Date.now() - hl.lastReport);
+    if (wait <= 0) {
+      hlFlushReport();
+      return;
+    }
+    if (!hl.reportTimer) {
+      hl.reportTimer = setTimeout(() => {
+        hl.reportTimer = null;
+        hlFlushReport();
+      }, wait);
+    }
+  }
+
+  /** 扫描当前 DOM：打标 + 累计计数（虚拟滚动下会被反复调用，必须幂等） */
+  function hlScan() {
+    if (!hl.on) return;
+    if (!isFollowingPage()) {
+      hlClearMarks();
+      return;
+    }
+
+    for (const cell of document.querySelectorAll(SEL.USER_CELL)) {
+      const marked = cell.getAttribute(HL.MARK_ATTR);
+      const btn = cell.querySelector(HL.BTN_SEL);
+      // 关注状态只可能随按钮变化（rest_id 级 testid）；按钮没变就不必重做昂贵解析
+      const sig = btn ? btn.getAttribute("data-testid") || "" : "";
+      if (marked && sig && cell.getAttribute(HL.SIG_ATTR) === sig) continue;
+
+      const info = parseCell(cell);
+      if (!info.handle) continue;
+      const kind = hlKindOf(cell, info.handle, info.followsYou);
+      if (marked !== kind) hlApplyMark(cell, kind);
+      cell.setAttribute(HL.SIG_ATTR, sig);
+      const key = info.handle.toLowerCase();
+      if (hl.seen.get(key) !== kind) hl.seen.set(key, kind);
+    }
+    hlReport(false);
+  }
+
+  function hlScheduleScan() {
+    if (!hl.on || hl.scanTimer) return;
+    hl.scanTimer = setTimeout(() => {
+      hl.scanTimer = null;
+      hlScan();
+    }, HL.SCAN_THROTTLE_MS);
+  }
+
+  function hlObserve() {
+    if (hl.observer) return;
+    try {
+      hl.observer = new MutationObserver(hlScheduleScan);
+      hl.observer.observe(document.body, { childList: true, subtree: true });
+    } catch (_) {
+      hl.observer = null; // 环境不支持时靠定时兜底
+    }
+  }
+
+  /** 定时兜底：节点被复用/样式被重排时把标记补回去；离开目标页面则清标记 */
+  function hlTick() {
+    if (!hl.on) return;
+    if (!isFollowingPage()) {
+      hlClearMarks();
+      return;
+    }
+    hlScan();
+  }
+
+  /** 开启标记；重复调用是幂等的（会做一次全量重扫，用于白名单变更后刷新） */
+  function hlStart(rawConfig) {
+    if (rawConfig) applyConfig(rawConfig);
+
+    if (!isFollowingPage()) {
+      log("当前不是“正在关注”页面，无法开启标记", "err");
+      return false;
+    }
+
+    injectHighlightStyle();
+
+    if (hl.on) {
+      hlClearMarks();
+      hlScan();
+      hlReport(true);
+      return true;
+    }
+
+    hl.on = true;
+    hl.seen.clear();
+    hl.lastReport = 0;
+    hlScan();
+    hlObserve();
+    hl.tickTimer = setInterval(hlTick, HL.TICK_MS);
+    hlReport(true);
+    log("已开启「未互关」标记：标红的用户没有回关你，手动点取关即可", "ok");
+    return true;
+  }
+
+  function hlStop() {
+    if (!hl.on) {
+      hlClearMarks();
+      return false;
+    }
+    hl.on = false;
+    if (hl.observer) {
+      hl.observer.disconnect();
+      hl.observer = null;
+    }
+    if (hl.tickTimer) {
+      clearInterval(hl.tickTimer);
+      hl.tickTimer = null;
+    }
+    if (hl.scanTimer) {
+      clearTimeout(hl.scanTimer);
+      hl.scanTimer = null;
+    }
+    hlClearMarks();
+    hl.seen.clear();
+    hlFlushReport();
+    log("已关闭「未互关」标记", "warn");
+    return true;
+  }
+
   // ================================================================ 生命周期
   function resetRun() {
     state.stopRequested = false;
@@ -547,7 +786,20 @@
         sendResponse({ ok: true, state: snapshot() });
         return;
       case "PING":
-        sendResponse({ ok: true, onFollowingPage: isFollowingPage() });
+        sendResponse({ ok: true, onFollowingPage: isFollowingPage(), highlight: hlSnapshot() });
+        return;
+      case "HIGHLIGHT_START": {
+        const ok = hlStart(msg.config);
+        sendResponse({
+          ok,
+          error: ok ? undefined : "当前不是“正在关注”页面",
+          state: snapshot(),
+        });
+        return;
+      }
+      case "HIGHLIGHT_STOP":
+        hlStop();
+        sendResponse({ ok: true, state: snapshot() });
         return;
       case "CS_FOLLOW_PROFILE": {
         // 关注作者主页（异步）→ 必须返回 true 保持消息通道开启
