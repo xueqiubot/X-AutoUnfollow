@@ -500,16 +500,26 @@
     seen: new Map(), // handle(小写) -> kind
   };
 
-  // 页面内样式：徽标走 ::after + attr(data-xuf-tag)，无需插入子节点
+  // 页面内样式。两条关键约定：
+  //  1) 标记（底色 / 左侧色条 / 描边）一律画在 ::before 覆盖层上，**不改 cell 的 background-color**：
+  //     X 在鼠标滑过时会重画整行底色（可能改 background-color，也可能由内部容器铺底），
+  //     直接改 cell 背景会被它盖掉，表现为「滑过就变灰」；覆盖层绘制在内容之上
+  //     （z-index:1 + pointer-events:none，不挡点击），因此滑过时标记颜色保持不变；
+  //  2) 徽标走 ::after + attr(data-xuf-tag)，不插入子节点。
   const HL_CSS = [
     '[data-testid="UserCell"][data-xuf-tag]{position:relative}',
+    '[data-testid="UserCell"][data-xuf-tag]::before{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;border-radius:12px;background:var(--xuf-bg,transparent);box-shadow:inset 3px 0 0 0 var(--xuf-bar,transparent)}',
+    '[data-testid="UserCell"][data-xuf-tag]:hover::before{background:var(--xuf-bg-hover,var(--xuf-bg,transparent))}',
     // 徽标尺寸刻意压到 14px 高并贴顶 2px：X 的 UserCell 里按钮是垂直居中的，
     // 顶部只留得下 ~16px，这样徽标不会压到「正在关注」按钮（且 pointer-events:none 兜底）
     '[data-testid="UserCell"][data-xuf-tag]::after{content:attr(data-xuf-tag);position:absolute;top:2px;right:10px;z-index:3;height:14px;line-height:14px;padding:0 6px;border-radius:999px;font-size:10px;font-weight:700;color:#fff;background:var(--xuf-tag-bg,#71767b);pointer-events:none;font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}',
-    '[data-testid="UserCell"].xuf-nonmutual{--xuf-tag-bg:#f4212e;background-color:rgba(244,33,46,.10)!important;box-shadow:inset 3px 0 0 0 #f4212e;outline:1px solid rgba(244,33,46,.5);outline-offset:-1px;border-radius:12px}',
-    '[data-testid="UserCell"].xuf-mutual{--xuf-tag-bg:#00ba7c;box-shadow:inset 3px 0 0 0 rgba(0,186,124,.75)}',
-    '[data-testid="UserCell"].xuf-whitelist{--xuf-tag-bg:#1d9bf0;box-shadow:inset 3px 0 0 0 rgba(29,155,240,.75)}',
-    '[data-testid="UserCell"].xuf-unfollowed{--xuf-tag-bg:#71767b;opacity:.5;box-shadow:inset 3px 0 0 0 rgba(113,118,123,.9)}',
+    // 未互关：整行淡红 + 左侧红条 + 细描边；滑过时红色略加深（而不是变灰）
+    '[data-testid="UserCell"].xuf-nonmutual{--xuf-tag-bg:#f4212e;--xuf-bg:rgba(244,33,46,.10);--xuf-bg-hover:rgba(244,33,46,.18);--xuf-bar:#f4212e}',
+    '[data-testid="UserCell"].xuf-nonmutual::before{outline:1px solid rgba(244,33,46,.5);outline-offset:-1px}',
+    // 互关 / 白名单 / 已取关：只给左侧色条（同样画在覆盖层上，滑过不会丢）
+    '[data-testid="UserCell"].xuf-mutual{--xuf-tag-bg:#00ba7c;--xuf-bar:rgba(0,186,124,.75)}',
+    '[data-testid="UserCell"].xuf-whitelist{--xuf-tag-bg:#1d9bf0;--xuf-bar:rgba(29,155,240,.75)}',
+    '[data-testid="UserCell"].xuf-unfollowed{--xuf-tag-bg:#71767b;--xuf-bar:rgba(113,118,123,.9);opacity:.5}',
   ].join("\n");
 
   function injectHighlightStyle() {

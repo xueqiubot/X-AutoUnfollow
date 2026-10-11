@@ -384,6 +384,25 @@ async function runHighlightScenario({ cells, config = {}, url, testTimings = {} 
 
     check("HIGHLIGHT_START 返回 ok", ctx.resp && ctx.resp.ok === true, JSON.stringify(ctx.resp));
     check("样式表已注入页面", !!ctx.doc.getElementById("xuf-highlight-style"));
+
+    // 回归防线：标记必须画在 ::before 覆盖层上（而不是改 cell 的 background-color）——
+    // X 悬停时会重画整行底色，直接改背景会被盖掉，表现为「鼠标滑过就变灰」。
+    const css = ctx.doc.getElementById("xuf-highlight-style").textContent;
+    check(
+      "标记底色画在 ::before 覆盖层（不依赖 cell 背景）",
+      /\[data-xuf-tag\]::before\{[^}]*background:var\(--xuf-bg/.test(css) &&
+        !/\.xuf-nonmutual\{[^}]*background-color/.test(css),
+      css
+    );
+    check(
+      "存在 :hover 覆盖层规则（滑过时保持标记颜色）",
+      /\[data-xuf-tag\]:hover::before/.test(css)
+    );
+    check(
+      "覆盖层 z-index 低于徽标、且不挡点击",
+      /\[data-xuf-tag\]::before\{[^}]*z-index:1[^}]*pointer-events:none/.test(css) &&
+        /\[data-xuf-tag\]::after\{[^}]*z-index:3/.test(css)
+    );
     check("alice（未互关）被标红", ctx.cell("alice").classList.contains("xuf-nonmutual"));
     check("bob（互关）标记为互关", ctx.cell("bob").classList.contains("xuf-mutual"));
     check("carol（白名单）标记为白名单", ctx.cell("carol").classList.contains("xuf-whitelist"));

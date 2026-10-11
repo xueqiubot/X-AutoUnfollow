@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "X 自动取关助手",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "在 X (Twitter) 的“正在关注”页面，高亮标出未互关的用户以便手动取关，也可按白名单与互关保护规则安全地批量自动取关。",
   "minimum_chrome_version": "116",
 
