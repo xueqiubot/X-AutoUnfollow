@@ -500,26 +500,28 @@
     seen: new Map(), // handle(小写) -> kind
   };
 
-  // 页面内样式。两条关键约定：
-  //  1) 标记（底色 / 左侧色条 / 描边）一律画在 ::before 覆盖层上，**不改 cell 的 background-color**：
-  //     X 在鼠标滑过时会重画整行底色（可能改 background-color，也可能由内部容器铺底），
-  //     直接改 cell 背景会被它盖掉，表现为「滑过就变灰」；覆盖层绘制在内容之上
-  //     （z-index:1 + pointer-events:none，不挡点击），因此滑过时标记颜色保持不变；
-  //  2) 徽标走 ::after + attr(data-xuf-tag)，不插入子节点。
+  // 页面内样式。三条关键约定：
+  //  1) **所有标记样式都挂在 data-xuf-mark 属性上，而不是 class**：X 的 React 在鼠标滑过时
+  //     会重渲染这一行并按 className 重写 class，把我们的类名冲掉（v1.1.0/v1.1.1 翻车的原因）；
+  //     属性不归 React 管，冲不掉。class 仅作为调试/测试用的辅助标记，扫描时会自动补回。
+  //  2) 底色 / 左侧色条 / 描边画在 ::before 覆盖层上，而不是改 cell 的 background-color ——
+  //     X 悬停时会重画行底色，改背景会被盖掉；覆盖层绘制在行内容之上（pointer-events:none 不挡点击）。
+  //  3) 被标记的 cell 用 isolation:isolate 建独立层叠上下文，覆盖层因此可以用足够大的 z-index
+  //     压过行内任何元素，又不会溢出到 X 的吸顶导航之上。
   const HL_CSS = [
-    '[data-testid="UserCell"][data-xuf-tag]{position:relative}',
-    '[data-testid="UserCell"][data-xuf-tag]::before{content:"";position:absolute;inset:0;z-index:1;pointer-events:none;border-radius:12px;background:var(--xuf-bg,transparent);box-shadow:inset 3px 0 0 0 var(--xuf-bar,transparent)}',
-    '[data-testid="UserCell"][data-xuf-tag]:hover::before{background:var(--xuf-bg-hover,var(--xuf-bg,transparent))}',
+    '[data-testid="UserCell"][data-xuf-mark]{position:relative;isolation:isolate}',
+    '[data-testid="UserCell"][data-xuf-mark]::before{content:"";position:absolute;inset:0;z-index:9;pointer-events:none;border-radius:12px;background:var(--xuf-bg,transparent);box-shadow:inset 3px 0 0 0 var(--xuf-bar,transparent)}',
+    '[data-testid="UserCell"][data-xuf-mark]:hover::before{background:var(--xuf-bg-hover,var(--xuf-bg,transparent))}',
     // 徽标尺寸刻意压到 14px 高并贴顶 2px：X 的 UserCell 里按钮是垂直居中的，
-    // 顶部只留得下 ~16px，这样徽标不会压到「正在关注」按钮（且 pointer-events:none 兜底）
-    '[data-testid="UserCell"][data-xuf-tag]::after{content:attr(data-xuf-tag);position:absolute;top:2px;right:10px;z-index:3;height:14px;line-height:14px;padding:0 6px;border-radius:999px;font-size:10px;font-weight:700;color:#fff;background:var(--xuf-tag-bg,#71767b);pointer-events:none;font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}',
-    // 未互关：整行淡红 + 左侧红条 + 细描边；滑过时红色略加深（而不是变灰）
-    '[data-testid="UserCell"].xuf-nonmutual{--xuf-tag-bg:#f4212e;--xuf-bg:rgba(244,33,46,.10);--xuf-bg-hover:rgba(244,33,46,.18);--xuf-bar:#f4212e}',
-    '[data-testid="UserCell"].xuf-nonmutual::before{outline:1px solid rgba(244,33,46,.5);outline-offset:-1px}',
+    // 顶部只留得下 ~16px，这样徽标不会压到「正在关注」按钮
+    '[data-testid="UserCell"][data-xuf-mark]::after{content:attr(data-xuf-tag);position:absolute;top:2px;right:10px;z-index:10;height:14px;line-height:14px;padding:0 6px;border-radius:999px;font-size:10px;font-weight:700;color:#fff;background:var(--xuf-tag-bg,#71767b);pointer-events:none;font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}',
+    // 各状态的颜色变量同样挂在属性上（class 被冲掉也照常生效）
+    '[data-testid="UserCell"][data-xuf-mark="nonMutual"]{--xuf-tag-bg:#f4212e;--xuf-bg:rgba(244,33,46,.10);--xuf-bg-hover:rgba(244,33,46,.18);--xuf-bar:#f4212e}',
+    '[data-testid="UserCell"][data-xuf-mark="nonMutual"]::before{outline:1px solid rgba(244,33,46,.5);outline-offset:-1px}',
     // 互关 / 白名单 / 已取关：只给左侧色条（同样画在覆盖层上，滑过不会丢）
-    '[data-testid="UserCell"].xuf-mutual{--xuf-tag-bg:#00ba7c;--xuf-bar:rgba(0,186,124,.75)}',
-    '[data-testid="UserCell"].xuf-whitelist{--xuf-tag-bg:#1d9bf0;--xuf-bar:rgba(29,155,240,.75)}',
-    '[data-testid="UserCell"].xuf-unfollowed{--xuf-tag-bg:#71767b;--xuf-bar:rgba(113,118,123,.9);opacity:.5}',
+    '[data-testid="UserCell"][data-xuf-mark="mutual"]{--xuf-tag-bg:#00ba7c;--xuf-bar:rgba(0,186,124,.75)}',
+    '[data-testid="UserCell"][data-xuf-mark="whitelisted"]{--xuf-tag-bg:#1d9bf0;--xuf-bar:rgba(29,155,240,.75)}',
+    '[data-testid="UserCell"][data-xuf-mark="done"]{--xuf-tag-bg:#71767b;--xuf-bar:rgba(113,118,123,.9);opacity:.5}',
   ].join("\n");
 
   function injectHighlightStyle() {
@@ -543,10 +545,15 @@
     return followsYou ? "mutual" : "nonMutual";
   }
 
-  function hlApplyMark(cell, kind) {
+  /** 只同步 class（样式不依赖它，仅作调试/测试标记） */
+  function hlApplyClasses(cell, kind) {
     const meta = HL_KINDS[kind];
     for (const cls of HL_CLASSES) cell.classList.toggle(cls, cls === meta.cls);
-    cell.setAttribute(HL.TAG_ATTR, meta.label);
+  }
+
+  function hlApplyMark(cell, kind) {
+    hlApplyClasses(cell, kind);
+    cell.setAttribute(HL.TAG_ATTR, HL_KINDS[kind].label);
     cell.setAttribute(HL.MARK_ATTR, kind);
   }
 
@@ -610,7 +617,14 @@
       const btn = cell.querySelector(HL.BTN_SEL);
       // 关注状态只可能随按钮变化（rest_id 级 testid）；按钮没变就不必重做昂贵解析
       const sig = btn ? btn.getAttribute("data-testid") || "" : "";
-      if (marked && sig && cell.getAttribute(HL.SIG_ATTR) === sig) continue;
+      if (marked && sig && cell.getAttribute(HL.SIG_ATTR) === sig) {
+        // 快路径：结论不会变。样式全挂在 data-xuf-mark 上，但 X 的 React 重渲染会按 className
+        // 重写 class 把我们的类名冲掉，这里顺手补回（只为调试方便，不影响标记显示）
+        if (HL_KINDS[marked] && !cell.classList.contains(HL_KINDS[marked].cls)) {
+          hlApplyClasses(cell, marked);
+        }
+        continue;
+      }
 
       const info = parseCell(cell);
       if (!info.handle) continue;

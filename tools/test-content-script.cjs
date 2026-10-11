@@ -385,23 +385,32 @@ async function runHighlightScenario({ cells, config = {}, url, testTimings = {} 
     check("HIGHLIGHT_START 返回 ok", ctx.resp && ctx.resp.ok === true, JSON.stringify(ctx.resp));
     check("样式表已注入页面", !!ctx.doc.getElementById("xuf-highlight-style"));
 
-    // 回归防线：标记必须画在 ::before 覆盖层上（而不是改 cell 的 background-color）——
-    // X 悬停时会重画整行底色，直接改背景会被盖掉，表现为「鼠标滑过就变灰」。
+    // 回归防线（v1.1.0/v1.1.1 两次翻车的根因）：
+    //  1) 样式必须挂在 data-xuf-mark 属性上 —— X 的 React 在悬停重渲染时会按 className 重写
+    //     class，把我们的类名冲掉；一旦颜色/变量依赖 class，标记就会变透明、徽标回退成灰色；
+    //  2) 底色必须画在 ::before 覆盖层上，而不是改 cell 的 background-color（会被 X 重画的
+    //     行背景盖掉）；覆盖层要建独立层叠上下文并压过行内元素。
     const css = ctx.doc.getElementById("xuf-highlight-style").textContent;
     check(
+      "颜色变量挂在 data-xuf-mark 上（class 被 React 冲掉也不失效）",
+      /\[data-xuf-mark="nonMutual"\]\{--xuf-tag-bg:/.test(css) && !/\.xuf-nonmutual\s*\{/.test(css),
+      css
+    );
+    check(
       "标记底色画在 ::before 覆盖层（不依赖 cell 背景）",
-      /\[data-xuf-tag\]::before\{[^}]*background:var\(--xuf-bg/.test(css) &&
-        !/\.xuf-nonmutual\{[^}]*background-color/.test(css),
+      /\[data-xuf-mark\]::before\{[^}]*background:var\(--xuf-bg/.test(css) &&
+        !/background-color:rgba\(244,33,46/.test(css),
       css
     );
     check(
       "存在 :hover 覆盖层规则（滑过时保持标记颜色）",
-      /\[data-xuf-tag\]:hover::before/.test(css)
+      /\[data-xuf-mark\]:hover::before/.test(css)
     );
     check(
-      "覆盖层 z-index 低于徽标、且不挡点击",
-      /\[data-xuf-tag\]::before\{[^}]*z-index:1[^}]*pointer-events:none/.test(css) &&
-        /\[data-xuf-tag\]::after\{[^}]*z-index:3/.test(css)
+      "覆盖层建独立层叠上下文、z-index 压过行内元素、且不挡点击",
+      /\[data-xuf-mark\]\{position:relative;isolation:isolate\}/.test(css) &&
+        /\[data-xuf-mark\]::before\{[^}]*z-index:9[^}]*pointer-events:none/.test(css) &&
+        /\[data-xuf-mark\]::after\{[^}]*z-index:10/.test(css)
     );
     check("alice（未互关）被标红", ctx.cell("alice").classList.contains("xuf-nonmutual"));
     check("bob（互关）标记为互关", ctx.cell("bob").classList.contains("xuf-mutual"));
@@ -523,6 +532,54 @@ async function runHighlightScenario({ cells, config = {}, url, testTimings = {} 
       ctx.logs.join(" | ")
     );
     ctx.win.close();
+  }
+
+  console.log("\n=== 用例 15：X 重渲染按 className 重写 class 后，标记仍然有效 ===");
+  {
+    const ctx = await runHighlightScenario({
+      cells: [userCell({ id: 1501, handle: "alice", name: "Alice" })],
+      config: {},
+    });
+    const cell = ctx.cell("alice");
+    check("初始已标红", cell.classList.contains("xuf-nonmutual"));
+
+    // 模拟 X 的 React 重渲染（悬停时常见）：按 className 整体重写 class，把我们的类冲掉。
+    // data-* 属性不归 React 管，因此必须仍然保持标记有效。
+    cell.className = "cell";
+    check("属性未被 React 影响（样式依赖它）",
+      cell.getAttribute("data-xuf-mark") === "nonMutual" && cell.getAttribute("data-xuf-tag") === "未互关",
+      cell.outerHTML.slice(0, 100));
+
+    await sleep(200); // 等下一轮扫描
+    check("class 被自动补回（便于调试）", cell.classList.contains("xuf-nonmutual"), cell.className);
+    check("data-xuf-mark 仍在（标记不依赖 class）", cell.getAttribute("data-xuf-mark") === "nonMutual");
+    check("样式表里没有以 .xuf- 类为选择器的颜色规则",
+      !/\.xuf-nonmutual\s*\{/.test(ctx.doc.getElementById("xuf-highlight-style").textContent));
+    ctx.stop();
+  }
+
+  console.log("\n=== 用例 16：React 重建节点（属性全丢）后会被重新标记 ===");
+  {
+    const ctx = await runHighlightScenario({
+      cells: [userCell({ id: 1601, handle: "alice", name: "Alice" })],
+      config: {},
+    });
+    const old = ctx.cell("alice");
+    const fresh = ctx.doc.createElement("div");
+    fresh.setAttribute("data-testid", "UserCell");
+    fresh.setAttribute("data-handle", "alice");
+    fresh.className = "cell";
+    fresh.innerHTML = old.innerHTML;
+    old.replaceWith(fresh); // 干净的新节点，没有任何 xuf 属性
+    await sleep(250);
+
+    const now = ctx.cell("alice");
+    check("新节点被重新打标", now.classList.contains("xuf-nonmutual"), now.outerHTML.slice(0, 120));
+    check("新节点带上了 data-xuf-mark / data-xuf-tag",
+      now.getAttribute("data-xuf-mark") === "nonMutual" && now.getAttribute("data-xuf-tag") === "未互关");
+    const hl = ctx.lastHl()?.data || {};
+    check("计数未因节点重建而漂移（未互关 1）", hl.nonMutual === 1, JSON.stringify(hl));
+    ctx.stop();
   }
 
   console.log(`\n========== 结果：${pass} 通过 / ${fail} 失败 ==========`);
